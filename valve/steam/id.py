@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2013-2014 Oliver Ainsworth
+# Copyright (C) 2013-2017 Oliver Ainsworth
 
 """Provides utilities for representing SteamIDs
 
@@ -220,7 +220,7 @@ class SteamID(object):
         if instance not in [1, 0]:
             raise SteamIDError(
                 "Expected instance to be 1 or 0, got {}".format(instance))
-        self.account_number = account_number  # Z
+        self.account_number = int(account_number)  # Z
         self.instance = instance  # Y
         self.type = type
         self.universe = universe  # X

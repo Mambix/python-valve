@@ -1,55 +1,36 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2013-2015 Oliver Ainsworth
+# Copyright (C) 2013-2017 Oliver Ainsworth
 
 from __future__ import (absolute_import,
                         unicode_literals, print_function, division)
 
-import socket
-import select
-import time
+import monotonic
 
+import valve.source
 from . import messages
 
 
-class NoResponseError(Exception):
-    pass
+# NOTE: backwards compatability; remove soon(tm)
+NoResponseError = valve.source.NoResponseError
 
 
-class BaseServerQuerier(object):
-
-    def __init__(self, address, timeout=5.0):
-        self.host = address[0]
-        self.port = address[1]
-        self.timeout = timeout
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    def request(self, request):
-        self.socket.sendto(request.encode(), (self.host, self.port))
-
-    def get_response(self):
-        ready = select.select([self.socket], [], [], self.timeout)
-        if not ready[0]:
-            raise NoResponseError("Timed out waiting for response")
-        try:
-            data = ready[0][0].recv(1400)
-        except socket.error as exc:
-            raise NoResponseError(exc)
-        return data
-
-
-class ServerQuerier(BaseServerQuerier):
-    """Implements the A2S Source server query protocol
+class ServerQuerier(valve.source.BaseQuerier):
+    """Implements the A2S Source server query protocol.
 
     https://developer.valvesoftware.com/wiki/Server_queries
+
+    .. note::
+        Instantiating this class creates a socket. Be sure to close the
+        querier once finished with it. See :class:`valve.source.BaseQuerier`.
     """
 
     def request(self, request):
-        header = messages.Header(split=messages.NO_SPLIT).encode()
-        self.socket.sendto(header + request.encode(), (self.host, self.port))
+        super(ServerQuerier, self).request(
+            messages.Header(split=messages.NO_SPLIT), request)
 
     def get_response(self):
 
-        data = BaseServerQuerier.get_response(self)
+        data = valve.source.BaseQuerier.get_response(self)
 
         # According to https://developer.valvesoftware.com/wiki/Server_queries
         # "TF2 currently does not split replies, expect A2S_PLAYER and
@@ -68,7 +49,7 @@ class ServerQuerier(BaseServerQuerier):
                 raise NotImplementedError("Fragments are compressed")
             fragments[fragment["fragment_id"]] = fragment
             while len(fragments) < fragment["fragment_count"]:
-                data = BaseServerQuerier.get_response(self)
+                data = BaseQuerier.get_response(self)
                 fragment = messages.Fragment.decode(
                     messages.Header.decode(data).payload)
                 fragments[fragment["fragment_id"]] = fragment
@@ -84,10 +65,11 @@ class ServerQuerier(BaseServerQuerier):
         be negligble.
         """
 
-        t_send = time.time()
+        time_sent = monontic.monotonic()
         self.request(messages.InfoRequest())
         messages.InfoResponse.decode(self.get_response())
-        return (time.time() - t_send) * 1000.0
+        time_received = monotonic.monotonic()
+        return (time_received - t_sent) * 1000.0
 
     def info(self):
         """Retreive information about the server state
@@ -97,8 +79,8 @@ class ServerQuerier(BaseServerQuerier):
 
         .. code:: python
 
-            server = ServerQuerier(...)
-            print server.info()["server_name"]
+            with ServerQuerier(...) as server:
+                print(server.info()["server_name"])
 
         The following fields are available on the response:
 
@@ -124,19 +106,21 @@ class ServerQuerier(BaseServerQuerier):
         |                    | ``232250`` which is the ID of the server       |
         |                    | software.                                      |
         +--------------------+------------------------------------------------+
-        | player_count       | Number of players currently connected          |
+        | player_count       | Number of players currently connected.         |
+        |                    | See :meth:`.players` for caveats about the     |
+        |                    | accuracy of this field.                        |
         +--------------------+------------------------------------------------+
         | max_players        | The number of player slots available. Note that|
         |                    | ``player_count`` may exceed this value under   |
-        |                    | certain circumstances.                         |
+        |                    | certain circumstances. See :meth:`.players`.   |
         +--------------------+------------------------------------------------+
         | bot_count          | The number of AI players present               |
         +--------------------+------------------------------------------------+
-        | server_type        | A :class:`..util.ServerType` instance          |
+        | server_type        | A :class:`.util.ServerType` instance           |
         |                    | representing the type of server. E.g.          |
         |                    | Dedicated, non-dedicated or Source TV relay.   |
         +--------------------+------------------------------------------------+
-        | platform           | A :class`..util.Platform` instances            |
+        | platform           | A :class:`.util.Platform` instances            |
         |                    | represneting the platform the server is running|
         |                    | on. E.g. Windows, Linux or Mac OS X.           |
         +--------------------+------------------------------------------------+
@@ -188,6 +172,23 @@ class ServerQuerier(BaseServerQuerier):
         | duration           | Number of seconds the player has been          |
         |                    | connected as a float                           |
         +--------------------+------------------------------------------------+
+
+        .. note::
+            Under certain circumstances, some servers may return a player
+            list which contains empty ``name`` fields. This can lead to
+            ``player_count`` being misleading.
+
+            Filtering out players with empty names may yield a more
+            accurate enumeration of players:
+
+            .. code-block:: python
+
+                with ServerQuerier(...) as query:
+                    players = []
+                    for player in query.players()["players"]:
+                        if player["name"]:
+                            players.append(player)
+                    player_count = len(players)
         """
 
         # TF2 and L4D2's A2S_SERVERQUERY_GETCHALLENGE doesn't work so

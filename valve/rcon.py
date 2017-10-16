@@ -707,7 +707,7 @@ class _RCONShell(cmd.Cmd):
         :param address: same as :class:`RCON`.
         :param password: same as :class:`RCON`.
         """
-        self.disconnect()
+        self._disconnect()
         self._rcon = RCON(address, password)
         try:
             self._rcon.connect()
@@ -749,7 +749,7 @@ class _RCONShell(cmd.Cmd):
                 response = self._rcon.execute(command).text
             except RCONCommunicationError:
                 print("Lost connection to server.")
-                self.disconnect()
+                self._disconnect()
             else:
                 if response.endswith("\n"):
                     response = response[:-1]
@@ -939,5 +939,5 @@ def _main(argv=None):
         print(execute(address, password, command))
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     _main()

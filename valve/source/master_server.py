@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2013-2014 Oliver Ainsworth
+# Copyright (C) 2013-2017 Oliver Ainsworth
 
 from __future__ import (absolute_import,
                         unicode_literals, print_function, division)
 
+import enum
+import itertools
+
 import six
 
-from . import a2s
+import valve.source
 from . import messages
 from . import util
 
@@ -24,10 +27,31 @@ REGION_REST = 0xFF
 MASTER_SERVER_ADDR = ("hl2master.steampowered.com", 27011)
 
 
-class MasterServerQuerier(a2s.BaseServerQuerier):
+class Duplicates(enum.Enum):
+    """Behaviour for duplicate addresses.
+
+    These values are intended to be used with :meth:`MasterServerQuerier.find`
+    to control how duplicate addresses returned by the master server are
+    treated.
+
+    :cvar KEEP: All addresses are returned, even duplicates.
+    :cvar SKIP: Skip duplicate addresses.
+    :cvar STOP: Stop returning addresses when a duplicate is encountered.
+    """
+
+    KEEP = "keep"
+    SKIP = "skip"
+    STOP = "stop"
+
+
+class MasterServerQuerier(valve.source.BaseQuerier):
     """Implements the Source master server query protocol
 
     https://developer.valvesoftware.com/wiki/Master_Server_Query_Protocol
+
+    .. note::
+        Instantiating this class creates a socket. Be sure to close the
+        querier once finished with it. See :class:`valve.source.BaseQuerier`.
     """
 
     def __init__(self, address=MASTER_SERVER_ADDR, timeout=10.0):
@@ -75,12 +99,11 @@ class MasterServerQuerier(a2s.BaseServerQuerier):
         first_request = True
         while first_request or last_addr != "0.0.0.0:0":
             first_request = False
-            self.request(messages.MasterServerRequest(region=region,
-                                                      address=last_addr,
-                                                      filter=filter_string))
+            self.request(messages.MasterServerRequest(
+                region=region, address=last_addr, filter=filter_string))
             try:
                 raw_response = self.get_response()
-            except a2s.NoResponseError:
+            except valve.source.NoResponseError:
                 return
             else:
                 response = messages.MasterServerResponse.decode(raw_response)
@@ -89,6 +112,26 @@ class MasterServerQuerier(a2s.BaseServerQuerier):
                         address["host"], address["port"])
                     if not address.is_null:
                         yield address["host"], address["port"]
+
+    def _deduplicate(self, method, query):
+        """Deduplicate addresses in a :meth:`._query`.
+
+        The given ``method`` should be a :class:`Duplicates` object. The
+        ``query`` is an iterator as returned by :meth:`._query`.
+        """
+        seen = set()
+        if method is Duplicates.KEEP:
+            for address in query:
+                yield address
+        else:
+            for address in query:
+                if address in seen:
+                    if method is Duplicates.SKIP:
+                        continue
+                    elif method is Duplicates.STOP:
+                        break
+                yield address
+                seen.add(address)
 
     def _map_region(self, region):
         """Convert string to numeric region identifier
@@ -139,7 +182,7 @@ class MasterServerQuerier(a2s.BaseServerQuerier):
                 raise ValueError("Invalid region identifier {!r}".format(reg))
         return regions
 
-    def find(self, region="all", **filters):
+    def find(self, region="all", duplicates=Duplicates.SKIP, **filters):
         """Find servers for a particular region and set of filtering rules
 
         This returns an iterator which yields ``(host, port)`` server
@@ -240,6 +283,10 @@ class MasterServerQuerier(a2s.BaseServerQuerier):
             actually satisfy the filter. Because of this it's advisable to
             explicitly check for compliance by querying each server
             individually. See :mod:`valve.source.a2s`.
+
+        The master server may return duplicate addresses. By default, these
+        duplicates are excldued from the iterator returned by this method.
+        See :class:`Duplicates` for controller this behaviour.
         """
         if isinstance(region, (int, six.text_type)):
             regions = self._map_region(region)
@@ -271,6 +318,10 @@ class MasterServerQuerier(a2s.BaseServerQuerier):
         filter_string = "\\".join([part for pair in filter_ for part in pair])
         if filter_string:
             filter_string = "\\" + filter_string
+        queries = []
         for region in regions:
-            for address in self._query(region, filter_string):
-                yield address
+            queries.append(self._query(region, filter_string))
+        query = self._deduplicate(
+            Duplicates(duplicates), itertools.chain.from_iterable(queries))
+        for address in query:
+            yield address

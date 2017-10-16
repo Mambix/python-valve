@@ -3,10 +3,17 @@ python:
   - "2.7"
   - "3.4"
   - "3.5"
+  - "3.6"
+  - "3.7-dev"
   - "pypy"
+  - "pypy3"
 install:
-  - pip install -e .[test]
-  - pip install sphinx
+  - pip install -e .[development,test,docs]
+  - pip install coveralls
 script:
-  - py.test -ra -v tests/
+  - pylint -ry valve/ || true
+  - py.test -ra -v tests/ --cov valve/
   - sphinx-build -vwT -b html docs/ _build/html
+after_success:
+  - ls -la
+  - coveralls
